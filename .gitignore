@@ -1,0 +1,22 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Data (uploads, DB는 git 제외)
+data/uploads/
+data/db/
+data/qdrant/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+.python-version
+uv.lock
