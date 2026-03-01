@@ -58,6 +58,11 @@ def setup_collection(client: QdrantClient) -> QdrantClient:
             field_name="page_number",
             field_schema=PayloadSchemaType.INTEGER,
         )
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="section_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
 
         logger.info(f"컬렉션 생성 완료: {COLLECTION_NAME} (vector_size={VECTOR_SIZE})")
 

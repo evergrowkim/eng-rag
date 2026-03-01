@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -20,6 +23,10 @@ from .qdrant_setup import COLLECTION_NAME, IndexingError
 
 BATCH_SIZE: int = 100
 EMBEDDING_MODEL: str = "text-embedding-3-large"
+CONTENT_MAX_LEN: int = 1500  # payload content 최대 길이
+
+# SEC-XY 패턴 (검토 요약 페이지에서 section_id 추출용)
+SEC_ID_RE = re.compile(r"SEC-(\w+(?:\([^)]*\))?)")
 
 
 class VectorIndexer:
@@ -30,9 +37,17 @@ class VectorIndexer:
         self.openai = openai_client
         self.collection = COLLECTION_NAME
 
-    async def index_document(self, doc: ParsedDocument, doc_id: str) -> int:
+    async def index_document(
+        self,
+        doc: ParsedDocument,
+        doc_id: str,
+        index_dir: str = "data/indexes",
+    ) -> int:
         """문서의 모든 블록을 인덱싱. 저장된 포인트 수 반환."""
-        chunks = self._prepare_chunks(doc, doc_id)
+        # PageIndex 트리에서 page → section_id 매핑 로드
+        page_to_section = self._load_page_section_map(doc_id, index_dir)
+
+        chunks = self._prepare_chunks(doc, doc_id, page_to_section)
 
         if not chunks:
             logger.warning(f"인덱싱할 청크 없음: {doc_id}")
@@ -78,7 +93,10 @@ class VectorIndexer:
         return total
 
     def _prepare_chunks(
-        self, doc: ParsedDocument, doc_id: str
+        self,
+        doc: ParsedDocument,
+        doc_id: str,
+        page_to_section: dict[int, str],
     ) -> list[dict[str, Any]]:
         """블록을 청크로 변환. 유형별 다른 전략 적용."""
         chunks: list[dict[str, Any]] = []
@@ -88,14 +106,22 @@ class VectorIndexer:
             if not chunk_text.strip():
                 continue
 
+            # section_id: 트리 매핑 → 블록 content에서 추출 → None
+            section_id = page_to_section.get(block.page)
+            if not section_id:
+                m = SEC_ID_RE.search(block.content)
+                if m:
+                    section_id = f"SEC-{m.group(1)}"
+
             payload: dict[str, Any] = {
                 "doc_id": doc_id,
                 "filename": doc.filename,
                 "block_type": block.block_type.value,
                 "page_number": block.page,
-                "content": block.content[:500],
+                "content": block.content[:CONTENT_MAX_LEN],
                 "has_table": block.table_data is not None,
                 "check_result": block.check_values,
+                "section_id": section_id,
             }
 
             chunks.append({
@@ -116,6 +142,42 @@ class VectorIndexer:
                         })
 
         return chunks
+
+    def _load_page_section_map(
+        self, doc_id: str, index_dir: str
+    ) -> dict[int, str]:
+        """PageIndex 트리 JSON에서 page → section_id 매핑 생성."""
+        tree_path = Path(index_dir) / f"{doc_id}_tree.json"
+        if not tree_path.exists():
+            logger.debug(f"트리 파일 없음: {tree_path}")
+            return {}
+
+        try:
+            with open(tree_path, encoding="utf-8") as f:
+                tree_data = json.load(f)
+        except Exception as e:
+            logger.warning(f"트리 파일 로드 실패: {e}")
+            return {}
+
+        mapping: dict[int, str] = {}
+        self._walk_tree_for_sections(tree_data.get("tree", []), mapping)
+        logger.info(f"페이지-섹션 매핑 {len(mapping)}건 로드")
+        return mapping
+
+    def _walk_tree_for_sections(
+        self, nodes: list[dict], mapping: dict[int, str]
+    ) -> None:
+        """트리 노드를 재귀 탐색하여 CHECK_SECTION 페이지에 section_id 매핑."""
+        for node in nodes:
+            if node.get("node_type") == "CHECK_SECTION":
+                title = node.get("title", "")
+                m = SEC_ID_RE.search(title)
+                if m:
+                    sec_id = f"SEC-{m.group(1)}"
+                    for page in node.get("pages", []):
+                        mapping[page] = sec_id
+            # 자식 노드 탐색
+            self._walk_tree_for_sections(node.get("children", []), mapping)
 
     def _prepare_chunk_text(self, block: ParsedBlock) -> str:
         """검색에 최적화된 텍스트 생성.

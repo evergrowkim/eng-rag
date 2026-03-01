@@ -6,13 +6,19 @@ VectorIndexer와 PageIndexer를 순차 실행하여
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+# .env 로드 (uvicorn reload 환경에서도 확실히 로드)
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
 
 from anthropic import AsyncAnthropic
 from loguru import logger
 from openai import AsyncOpenAI
-from qdrant_client import QdrantClient
 
+from ..common.qdrant_client import get_qdrant_client
 from ..ingestion.layout_parser import ParsedDocument
 from .page_indexer import PageIndexer
 from .qdrant_setup import IndexingError, setup_collection
@@ -31,7 +37,7 @@ class IndexingPipeline:
         logger.info(f"IndexingPipeline 초기화: qdrant={qdrant_host}:{qdrant_port}")
 
         try:
-            qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
+            qdrant_client = get_qdrant_client(host=qdrant_host, port=qdrant_port)
         except Exception as e:
             logger.error(f"Qdrant 연결 실패: {e}")
             raise IndexingError(str(e)) from e
@@ -48,11 +54,13 @@ class IndexingPipeline:
         logger.info(f"=== 인덱싱 시작: {doc_id} ===")
 
         try:
-            # 1. 벡터 인덱싱
-            point_count = await self.vector_indexer.index_document(doc, doc_id)
-
-            # 2. PageIndex 트리 생성
+            # 1. PageIndex 트리 생성 (벡터 인덱싱보다 먼저 — section_id 매핑 필요)
             tree = await self.page_indexer.build_tree(doc, doc_id)
+
+            # 2. 벡터 인덱싱 (트리의 section_id 매핑 활용)
+            point_count = await self.vector_indexer.index_document(
+                doc, doc_id, index_dir=str(self.page_indexer.index_dir),
+            )
 
             result: dict[str, Any] = {
                 "doc_id": doc_id,

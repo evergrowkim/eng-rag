@@ -29,7 +29,7 @@ from ..ingestion.layout_parser import BlockType, ParsedDocument
 CHAPTER_RE = re.compile(r"^(?:0?\d+)\.\s+[가-힣A-Za-z]")
 SECTION_RE = re.compile(r"^\d+-\d+\.\s+[가-힣A-Za-z]")
 SUBSECTION_RE = re.compile(r"^\d+-\d+-\d+\.\s+[가-힣A-Za-z]")
-SEC_CHECK_RE = re.compile(r"SEC-(\w+)\s+검토\s*요약")
+SEC_CHECK_RE = re.compile(r"SEC-(\w+(?:\([^)]*\))?)\s+검토\s*요약")
 
 
 @dataclass

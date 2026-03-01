@@ -13,7 +13,7 @@ from typing import Any
 from loguru import logger
 
 from .block_classifier import BlockClassifier
-from .layout_parser import BlockType, LayoutParser
+from .layout_parser import BlockType, LayoutParser, ParsedDocument
 from .section_aggregator import SectionAggregator
 from .sql_saver import SQLSaver
 
@@ -28,19 +28,14 @@ class IngestionPipeline:
         self.saver = SQLSaver(db_path)
         self.aggregator = SectionAggregator()
 
-    async def ingest(self, pdf_path: str) -> dict[str, Any]:
+    async def ingest(
+        self, pdf_path: str
+    ) -> tuple[dict[str, Any], ParsedDocument]:
         """PDF를 파싱하고 DB에 저장한다.
 
         Returns:
-            {
-                "doc_id": str,
-                "page_count": int,
-                "block_count": int,
-                "table_count": int,
-                "check_count": int,
-                "section_count": int,
-                "metadata": dict,
-            }
+            (result_dict, parsed_document) 튜플.
+            parsed_document는 인덱싱 파이프라인에 전달하여 이중 파싱을 방지한다.
         """
         filename = Path(pdf_path).name
         logger.info(f"=== 인제스션 시작: {filename} ===")
@@ -69,7 +64,7 @@ class IngestionPipeline:
 
         logger.info(f"=== 인제스션 완료: {doc_id} ===")
 
-        return {
+        result = {
             "doc_id": doc_id,
             "page_count": doc.page_count,
             "block_count": len(doc.blocks),
@@ -78,3 +73,5 @@ class IngestionPipeline:
             "section_count": len(section_summaries),
             "metadata": doc.metadata,
         }
+
+        return result, doc

@@ -36,7 +36,7 @@ class BlockClassifier:
     MATERIAL_HEADERS: set[str] = {"허용응력", "항복강도", "인장강도", "강종"}
 
     # ── 단면 검토 요약 ──
-    SECTION_SUMMARY_RE = re.compile(r"SEC-\w+.*검토\s*요약", re.IGNORECASE)
+    SECTION_SUMMARY_RE = re.compile(r"SEC-\w+(?:\([^)]*\))?.*검토\s*요약", re.IGNORECASE)
 
     def classify_table(self, headers: list[str], raw_rows: list[list[str]]) -> BlockType:
         """테이블 헤더를 분석하여 세부 BlockType을 반환한다."""

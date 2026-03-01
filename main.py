@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)  # .env 파일에서 환경변수 로드
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

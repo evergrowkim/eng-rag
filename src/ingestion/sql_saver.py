@@ -5,6 +5,7 @@
 - chunks: 모든 블록 공통 저장
 - soil_parameters: 지반정수 테이블 → 구조화 저장
 - section_checks: 검토결과 (OK/NG) 저장
+- anchor_design: 앵커/지보재 설계값
 """
 
 from __future__ import annotations
@@ -15,6 +16,46 @@ import aiosqlite
 from loguru import logger
 
 from .layout_parser import BlockType, ParsedBlock, ParsedDocument
+
+# 지반정수 테이블 헤더 매핑 (실제 PDF에서 다양한 형태로 등장)
+SOIL_HEADER_MAP: dict[str, str] = {
+    # N값
+    "N치": "N_value",
+    "N값": "N_value",
+    "N": "N_value",
+    "SPT-N": "N_value",
+    # 단위중량
+    "단위중량": "unit_weight",
+    "γt": "unit_weight",
+    "rt": "unit_weight",
+    "단위\n중량": "unit_weight",
+    "단위 중량": "unit_weight",
+    "γ": "unit_weight",
+    # 점착력
+    "점착력": "cohesion",
+    "c": "cohesion",
+    "C": "cohesion",
+    "c(kN/m²)": "cohesion",
+    "점착력\n(kN/m²)": "cohesion",
+    # 내부마찰각
+    "내부마찰각": "friction_angle",
+    "φ": "friction_angle",
+    "Φ": "friction_angle",
+    "내부\n마찰각": "friction_angle",
+    "내부 마찰각": "friction_angle",
+    # 수평지반반력계수
+    "수평지반반력계수": "kh",
+    "Kh": "kh",
+    "kh": "kh",
+    "수평반력계수": "kh",
+    "수평\n지반반력\n계수": "kh",
+    # 지층명
+    "지층": "layer_name",
+    "지층명": "layer_name",
+    "지 층": "layer_name",
+    "토질": "layer_name",
+    "지반종류": "layer_name",
+}
 
 
 class SQLSaver:
@@ -80,7 +121,10 @@ class SQLSaver:
     ) -> None:
         """지반정수 테이블 → soil_parameters 테이블 저장."""
         for row in block.table_data or []:
-            layer = row.get("지층", "").strip()
+            # 정규화된 키로 변환
+            normalized = self._normalize_soil_row(row)
+
+            layer = normalized.get("layer_name", "").strip()
             if not layer:
                 continue
 
@@ -94,28 +138,58 @@ class SQLSaver:
                 (
                     doc_id,
                     layer,
-                    _safe_float(row.get("N치")),
-                    _safe_float(row.get("단위중량")),
-                    _safe_float(row.get("점착력")),
-                    _safe_float(row.get("내부마찰각")),
-                    _safe_float(row.get("수평지반반력계수")),
+                    _safe_float(normalized.get("N_value")),
+                    _safe_float(normalized.get("unit_weight")),
+                    _safe_float(normalized.get("cohesion")),
+                    _safe_float(normalized.get("friction_angle")),
+                    _safe_float(normalized.get("kh")),
                     block.page,
                 ),
             )
+
+    def _normalize_soil_row(self, row: dict[str, str]) -> dict[str, str]:
+        """지반정수 행의 다양한 헤더 형태를 정규화."""
+        normalized: dict[str, str] = {}
+        for key, value in row.items():
+            clean_key = key.strip().replace("\n", "").replace(" ", "")
+            # 정확한 매핑 검색
+            mapped = SOIL_HEADER_MAP.get(key)
+            if not mapped:
+                mapped = SOIL_HEADER_MAP.get(clean_key)
+            if not mapped:
+                # 부분 매칭 시도
+                for header, target in SOIL_HEADER_MAP.items():
+                    if header in clean_key or clean_key in header:
+                        mapped = target
+                        break
+            if mapped:
+                normalized[mapped] = value
+            else:
+                normalized[key] = value
+        return normalized
 
     async def _save_check_result(
         self, db: aiosqlite.Connection, doc_id: str, block: ParsedBlock
     ) -> None:
         """검토결과 → section_checks 테이블 저장."""
         cv = block.check_values or {}
+
+        # block.content에서 section_id 추출 시도
+        import re
+        section_id = None
+        sec_match = re.search(r"SEC-(\w+(?:\([^)]*\))?)", block.content)
+        if sec_match:
+            section_id = f"SEC-{sec_match.group(1)}"
+
         await db.execute(
             """
             INSERT INTO section_checks
-            (doc_id, moment_calc, moment_allow, overall_result, page_number)
-            VALUES (?, ?, ?, ?, ?)
+            (doc_id, section_id, moment_calc, moment_allow, overall_result, page_number)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
+                section_id,
                 cv.get("calculated"),
                 cv.get("allowable"),
                 cv.get("result"),
@@ -133,10 +207,12 @@ class SQLSaver:
                 """
                 INSERT INTO section_checks
                 (doc_id, section_id, excavation_depth, surcharge_load,
-                 moment_calc, moment_allow, embedment_SF,
+                 moment_calc, moment_allow,
+                 embedment_depth, embedment_SF, embedment_SF_allow,
                  head_disp_calc, head_disp_allow,
-                 max_disp_calc, max_disp_allow, page_number)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_disp_calc, max_disp_allow,
+                 overall_result, page_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     doc_id,
@@ -145,14 +221,40 @@ class SQLSaver:
                     summary.get("surcharge_load"),
                     summary.get("moment_calc"),
                     summary.get("moment_allow"),
+                    summary.get("embedment_depth"),
                     summary.get("embedment_SF"),
+                    summary.get("embedment_SF_allow"),
                     summary.get("head_disp_calc"),
                     summary.get("head_disp_allow"),
                     summary.get("max_disp_calc"),
                     summary.get("max_disp_allow"),
+                    summary.get("overall_result"),
                     summary.get("page"),
                 ),
             )
+
+            # anchor_design 저장
+            anchor_info = summary.get("anchor_info")
+            if anchor_info:
+                await db.execute(
+                    """
+                    INSERT INTO anchor_design
+                    (doc_id, section_id, stage, free_length, anchor_length,
+                     design_force, tensile_force, usage_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc_id,
+                        summary.get("section_id"),
+                        anchor_info.get("stage"),
+                        anchor_info.get("free_length"),
+                        anchor_info.get("anchor_length"),
+                        anchor_info.get("design_force"),
+                        anchor_info.get("tensile_force"),
+                        "TEMPORARY",
+                    ),
+                )
+
             await db.commit()
 
 
@@ -161,6 +263,6 @@ def _safe_float(val: str | None) -> float | None:
     if val is None:
         return None
     try:
-        return float(val.replace(",", ""))
+        return float(str(val).replace(",", ""))
     except (ValueError, AttributeError):
         return None

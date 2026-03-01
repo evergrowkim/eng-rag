@@ -68,13 +68,17 @@ class LayoutParser:
             for page_num, page in enumerate(pdf.pages, start=1):
                 logger.debug(f"  페이지 {page_num}/{doc.page_count} 처리 중")
 
-                # 1. 테이블 추출
-                table_blocks = self._extract_tables(page, page_num)
-                doc.blocks.extend(table_blocks)
+                try:
+                    # 1. 테이블 추출
+                    table_blocks = self._extract_tables(page, page_num)
+                    doc.blocks.extend(table_blocks)
 
-                # 2. 텍스트 추출 (테이블 영역 제외)
-                text_blocks = self._extract_text_blocks(page, page_num, table_blocks)
-                doc.blocks.extend(text_blocks)
+                    # 2. 텍스트 추출 (테이블 영역 제외)
+                    text_blocks = self._extract_text_blocks(page, page_num, table_blocks)
+                    doc.blocks.extend(text_blocks)
+                except (MemoryError, Exception) as e:
+                    logger.warning(f"  페이지 {page_num} 처리 실패 (건너뜀): {e}")
+                    continue
 
         # 3. 메타데이터 추출
         doc.metadata = self._extract_metadata(doc.blocks)

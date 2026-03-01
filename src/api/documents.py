@@ -9,10 +9,8 @@ import aiosqlite
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from loguru import logger
 from pydantic import BaseModel
-from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from ..ingestion.layout_parser import LayoutParser
 from ..ingestion.pipeline import IngestionPipeline
 
 router = APIRouter(tags=["documents"])
@@ -60,13 +58,11 @@ async def upload_document(file: UploadFile = File(...)) -> DocumentInfo:
     logger.info(f"업로드: {file.filename} ({save_path.stat().st_size // 1024}KB)")
 
     try:
-        # 파싱 + DB 저장
-        ingest_result = await ingestion.ingest(str(save_path))
+        # 파싱 + DB 저장 (ParsedDocument도 함께 반환)
+        ingest_result, parsed_doc = await ingestion.ingest(str(save_path))
         doc_id = ingest_result["doc_id"]
 
-        # 벡터 인덱싱 (파싱 결과 재사용)
-        parser = LayoutParser()
-        parsed_doc = parser.parse(str(save_path))
+        # 벡터 인덱싱 (ParsedDocument 재사용 — 이중 파싱 제거)
         index_result = await _get_indexing().index(parsed_doc, doc_id)
 
         return DocumentInfo(
@@ -114,7 +110,8 @@ async def delete_document(doc_id: str) -> dict:
         await db.commit()
 
     # Vector 삭제
-    qdrant = QdrantClient(host="localhost", port=6333)
+    from ..common.qdrant_client import get_qdrant_client
+    qdrant = get_qdrant_client()
     qdrant.delete(
         collection_name="doaz_eng_rag",
         points_selector=Filter(
